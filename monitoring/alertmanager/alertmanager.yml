@@ -1,0 +1,14 @@
+# Alertmanager receives alerts from Prometheus, groups them, and sends them on.
+# Real NOCs send to PagerDuty/Slack/email; we send to our NOC Console.
+route:
+  receiver: noc-console
+  group_by: ["alertname", "device"]
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 1h
+
+receivers:
+  - name: noc-console
+    webhook_configs:
+      - url: http://noc-console:8000/api/alertmanager
+        send_resolved: true

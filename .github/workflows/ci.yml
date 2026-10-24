@@ -1,0 +1,120 @@
+# ---------------------------------------------------------------------------
+# CI/CD pipeline. GitHub runs this on its own servers ("runners") every time
+# you push code or open a Pull Request.
+#
+#   push / PR ──▶ test (both apps) ──┐
+#             ──▶ validate configs ──┴──▶ build images ──▶ push to GHCR (only on main)
+#
+# CI = Continuous Integration: every change is tested automatically.
+# CD = Continuous Delivery: every change on main becomes a ready-to-deploy image.
+# ---------------------------------------------------------------------------
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: by default the pipeline can only READ the repo.
+permissions:
+  contents: read
+
+jobs:
+  # ---- 1. Unit tests --------------------------------------------------------
+  test:
+    name: Test ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    # A matrix runs this job twice in parallel, once per app.
+    strategy:
+      matrix:
+        app: [noc-console, device-simulator]
+    defaults:
+      run:
+        working-directory: apps/${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@v5          # download the repo onto the runner
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"           # same Python as the Docker image
+          cache: pip
+          cache-dependency-path: apps/${{ matrix.app }}/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -v
+
+  # ---- 2. Validate Kubernetes + monitoring configs -------------------------
+  # Catches broken YAML or a typo in an alert rule BEFORE it reaches a cluster.
+  validate:
+    name: Validate configs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check Prometheus alert rules
+        run: >
+          docker run --rm -v "$PWD/monitoring/prometheus:/p" --entrypoint promtool
+          prom/prometheus:v2.55.1 check rules /p/rules/network-alerts.yml
+
+      - name: Check Alertmanager config
+        run: >
+          docker run --rm -v "$PWD/monitoring/alertmanager:/a" --entrypoint amtool
+          prom/alertmanager:v0.27.0 check-config /a/alertmanager.yml
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar xz -C "$RUNNER_TEMP" kubeconform
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Render and validate Kubernetes manifests
+        run: |
+          # the real postgres.env is not in git, so use the example for validation
+          cp k8s/overlays/local/postgres.env.example k8s/overlays/local/postgres.env
+          kubectl kustomize k8s/overlays/local > rendered.yaml
+          kubeconform -strict -summary rendered.yaml
+
+  # ---- 3. Build Docker images (and push them on main) ----------------------
+  build:
+    name: Build ${{ matrix.app }} image
+    needs: [test, validate]                # only build if tests and validation passed
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write                      # allowed to push to GitHub Container Registry
+    strategy:
+      matrix:
+        app: [noc-console, device-simulator]
+    env:
+      PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: env.PUSH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # temporary token GitHub creates for each run
+
+      # Tags every image with the commit SHA (e.g. sha-3f9c2ab) so you always know
+      # exactly which code is inside, plus "latest" on main.
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.app }}
+          tags: |
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build (and push)
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/${{ matrix.app }}
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}

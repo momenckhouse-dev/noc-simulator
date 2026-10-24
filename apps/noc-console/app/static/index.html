@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NOC Console</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3; --muted: #8b949e;
+    --critical: #f85149; --major: #f0883e; --minor: #d29922; --ok: #3fb950; --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center;
+           padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  h1 { font-size: 18px; margin: 0; } h2 { font-size: 15px; margin: 0 0 10px; }
+  main { padding: 16px; display: grid; gap: 16px; max-width: 1400px; margin: 0 auto; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile, section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .tile .n { font-size: 28px; font-weight: 600; } .tile .l { color: var(--muted); font-size: 13px; }
+  section { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td.wrap { white-space: normal; } th { color: var(--muted); font-weight: 500; }
+  .sev { padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; color: #0d1117; }
+  .sev.critical { background: var(--critical); } .sev.major { background: var(--major); } .sev.minor { background: var(--minor); }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .up { background: var(--ok); } .down { background: var(--critical); }
+  .bad { color: var(--critical); font-weight: 600; }
+  button { background: #21262d; color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+           padding: 4px 10px; cursor: pointer; font: inherit; font-size: 13px; }
+  button:hover { border-color: var(--accent); }
+  input, select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 13px; }
+  .muted { color: var(--muted); }
+  .incident { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+  .incident .head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .notes { margin: 8px 0; padding-left: 18px; font-size: 13px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
+  .row input[name=text] { flex: 1; min-width: 200px; }
+  #error { color: var(--critical); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>NOC Console</h1>
+  <div class="row" style="margin:0">
+    <label>Operator <input id="operator" placeholder="your name"></label>
+    <span id="clock" class="muted"></span>
+  </div>
+</header>
+<main>
+  <div id="error"></div>
+  <div class="tiles">
+    <div class="tile"><div class="n" id="t-firing">-</div><div class="l">Firing alerts</div></div>
+    <div class="tile"><div class="n" id="t-unack">-</div><div class="l">Not acknowledged</div></div>
+    <div class="tile"><div class="n" id="t-critical">-</div><div class="l">Critical</div></div>
+    <div class="tile"><div class="n" id="t-incidents">-</div><div class="l">Open incidents</div></div>
+    <div class="tile"><div class="n" id="t-down">-</div><div class="l">Devices down</div></div>
+  </div>
+
+  <section>
+    <h2>Active alerts</h2>
+    <table>
+      <thead><tr><th>Severity</th><th>Device</th><th>Alert</th><th>Summary</th><th>Started</th><th>Ack</th><th>Incident</th></tr></thead>
+      <tbody id="alerts"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Devices</h2>
+    <table>
+      <thead><tr><th>Device</th><th>Type</th><th>Site</th><th>CPU %</th><th>Mem %</th><th>Latency ms</th><th>Loss %</th><th>Interfaces down</th></tr></thead>
+      <tbody id="devices"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Incidents</h2>
+    <div id="incidents"></div>
+  </section>
+
+  <section>
+    <h2>Lab control <span class="muted">(trainer only: breaks things on purpose)</span></h2>
+    <div class="row">
+      <select id="lab-device"></select>
+      <select id="lab-fault">
+        <option value="down">device down</option>
+        <option value="interface_down">uplink interface down</option>
+        <option value="high_cpu">high CPU</option>
+        <option value="high_latency">high latency</option>
+        <option value="packet_loss">packet loss</option>
+      </select>
+      <input id="lab-duration" type="number" min="1" placeholder="seconds (empty = until cleared)" style="width:240px">
+      <button id="lab-inject">Inject fault</button>
+      <button id="lab-clear">Clear device</button>
+    </div>
+    <div id="lab-faults" class="muted" style="margin-top:8px;font-size:13px"></div>
+  </section>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const SEV_RANK = { critical: 0, major: 1, minor: 2 };
+
+function ago(iso) {
+  if (!iso) return "";
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m ago";
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(typeof body.detail === "string" ? body.detail : res.statusText);
+  }
+  return res.json();
+}
+
+function showError(e) { $("#error").textContent = e ? String(e.message || e) : ""; }
+
+function operator() {
+  const name = $("#operator").value.trim();
+  if (!name) { $("#operator").focus(); throw new Error("Type your operator name first (top right)."); }
+  try { localStorage.setItem("operator", name); } catch {}
+  return name;
+}
+try { $("#operator").value = localStorage.getItem("operator") || ""; } catch {}
+
+function renderSummary(s, devices) {
+  $("#t-firing").textContent = s.firing;
+  $("#t-unack").textContent = s.unacknowledged;
+  $("#t-critical").textContent = s.by_severity.critical;
+  $("#t-incidents").textContent = s.open_incidents;
+  $("#t-down").textContent = devices ? devices.filter((d) => !d.up).length : "?";
+}
+
+function renderAlerts(alerts) {
+  alerts.sort((a, b) => (SEV_RANK[a.severity] ?? 9) - (SEV_RANK[b.severity] ?? 9) || b.starts_at.localeCompare(a.starts_at));
+  $("#alerts").innerHTML = alerts.length ? alerts.map((a) => `
+    <tr>
+      <td><span class="sev ${esc(a.severity)}">${esc(a.severity)}</span></td>
+      <td>${esc(a.device)}</td>
+      <td>${esc(a.alertname)}</td>
+      <td class="wrap">${esc(a.summary)}</td>
+      <td title="${esc(a.starts_at)}">${ago(a.starts_at)}</td>
+      <td>${a.acknowledged_by ? `<span class="muted">${esc(a.acknowledged_by)}</span>` : `<button data-ack="${a.id}">Ack</button>`}</td>
+      <td>${a.incident_id ? `#${a.incident_id}` : `<button data-open="${a.id}" data-sev="${esc(a.severity)}" data-title="${esc(a.alertname + " on " + a.device)}">Open incident</button>`}</td>
+    </tr>`).join("") : `<tr><td colspan="7" class="muted">No active alerts. All quiet.</td></tr>`;
+}
+
+function renderDevices(devices) {
+  if (!devices) { $("#devices").innerHTML = `<tr><td colspan="8" class="bad">Device simulator unreachable</td></tr>`; return; }
+  $("#devices").innerHTML = devices.map((d) => {
+    const ifDown = d.interfaces.filter((i) => !i.up).map((i) => i.name);
+    return `<tr>
+      <td><span class="dot ${d.up ? "up" : "down"}"></span>${esc(d.name)}</td>
+      <td>${esc(d.type)}</td><td>${esc(d.site)}</td>
+      <td class="${d.cpu_percent > 90 ? "bad" : ""}">${d.up ? d.cpu_percent : "-"}</td>
+      <td>${d.up ? d.memory_percent : "-"}</td>
+      <td class="${d.latency_ms > 200 ? "bad" : ""}">${d.up ? d.latency_ms : "-"}</td>
+      <td class="${d.packet_loss_percent > 5 ? "bad" : ""}">${d.packet_loss_percent}</td>
+      <td class="${ifDown.length ? "bad" : ""}">${ifDown.length ? esc(ifDown.join(", ")) : "0"}</td>
+    </tr>`;
+  }).join("");
+
+  const sel = $("#lab-device");
+  if (!sel.options.length) sel.innerHTML = devices.map((d) => `<option>${esc(d.name)}</option>`).join("");
+  const faulty = devices.filter((d) => d.faults.length);
+  $("#lab-faults").textContent = faulty.length
+    ? "Active faults: " + faulty.map((d) => `${d.name} (${d.faults.join(", ")})`).join(" | ")
+    : "No faults injected.";
+}
+
+function renderIncidents(incidents) {
+  // don't wipe a note the operator is typing
+  if ($("#incidents").contains(document.activeElement)) return;
+  $("#incidents").innerHTML = incidents.length ? incidents.map((i) => `
+    <div class="incident">
+      <div class="head">
+        <strong>#${i.id}</strong> <span class="sev ${esc(i.severity)}">${esc(i.severity)}</span>
+        <span>${esc(i.title)}</span>
+        <span class="muted">opened ${ago(i.created_at)}${i.resolved_at ? ", resolved " + ago(i.resolved_at) : ""}</span>
+        <select data-status="${i.id}">
+          ${["open", "investigating", "resolved"].map((s) => `<option ${s === i.status ? "selected" : ""}>${s}</option>`).join("")}
+        </select>
+      </div>
+      <div class="muted" style="font-size:13px;margin-top:4px">
+        Alerts: ${i.alerts.map((a) => `${esc(a.alertname)} on ${esc(a.device)} (${esc(a.status)})`).join(", ") || "none"}
+      </div>
+      <ul class="notes">${i.notes.map((n) => `<li><span class="muted">${ago(n.created_at)} ${esc(n.author)}:</span> ${esc(n.text)}</li>`).join("")}</ul>
+      <form class="row" data-note="${i.id}">
+        <input name="text" placeholder="Add a note: what did you check, who did you call?">
+        <button type="submit">Add note</button>
+      </form>
+    </div>`).join("") : `<p class="muted">No incidents yet.</p>`;
+}
+
+async function refresh() {
+  try {
+    const [summary, alerts, incidents, devices] = await Promise.all([
+      api("/api/summary"), api("/api/alerts?status=firing"), api("/api/incidents"),
+      api("/api/devices").catch(() => null),
+    ]);
+    renderSummary(summary, devices);
+    renderAlerts(alerts);
+    renderDevices(devices);
+    renderIncidents(incidents);
+    showError(null);
+  } catch (e) { showError(e); }
+}
+
+async function act(fn) {
+  try { await fn(); await refresh(); } catch (e) { showError(e); }
+}
+
+document.addEventListener("click", (ev) => {
+  const t = ev.target;
+  if (t.dataset.ack) act(() => api(`/api/alerts/${t.dataset.ack}/ack`, { method: "POST", body: JSON.stringify({ user: operator() }) }));
+  if (t.dataset.open) act(() => api("/api/incidents", {
+    method: "POST",
+    body: JSON.stringify({ title: t.dataset.title, severity: t.dataset.sev in SEV_RANK ? t.dataset.sev : "minor", alert_ids: [Number(t.dataset.open)] }),
+  }));
+  if (t.id === "lab-inject") act(() => {
+    const seconds = Number($("#lab-duration").value);
+    return api("/api/lab/chaos", { method: "POST", body: JSON.stringify({
+      device: $("#lab-device").value, fault: $("#lab-fault").value, duration_seconds: seconds > 0 ? seconds : null,
+    }) });
+  });
+  if (t.id === "lab-clear") act(() => api(`/api/lab/chaos/${encodeURIComponent($("#lab-device").value)}`, { method: "DELETE" }));
+});
+
+document.addEventListener("change", (ev) => {
+  const id = ev.target.dataset.status;
+  if (id) act(async () => { await api(`/api/incidents/${id}`, { method: "PATCH", body: JSON.stringify({ status: ev.target.value }) }); ev.target.blur(); });
+});
+
+document.addEventListener("submit", (ev) => {
+  const id = ev.target.dataset.note;
+  if (!id) return;
+  ev.preventDefault();
+  const input = ev.target.elements.text;
+  if (!input.value.trim()) return;
+  act(async () => {
+    await api(`/api/incidents/${id}/notes`, { method: "POST", body: JSON.stringify({ author: operator(), text: input.value.trim() }) });
+    input.blur();
+  });
+});
+
+setInterval(() => { $("#clock").textContent = new Date().toLocaleTimeString(); }, 1000);
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

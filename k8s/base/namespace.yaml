@@ -1,0 +1,6 @@
+# A Namespace is a folder inside the cluster. Everything for this project lives in "noc",
+# so `kubectl delete namespace noc` removes the whole platform in one go.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: noc

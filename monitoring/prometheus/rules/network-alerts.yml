@@ -1,0 +1,57 @@
+# Alert rules. "expr" is a PromQL query: when it returns something for
+# longer than "for", the alert fires and goes to Alertmanager.
+# "unless on(device) device_up == 0" stops an alert storm: when a whole device
+# is down we want ONE DeviceDown alert, not also InterfaceDown and PacketLoss.
+groups:
+  - name: network
+    rules:
+      - alert: DeviceDown
+        expr: device_up == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.device }} ({{ $labels.type }}, {{ $labels.site }}) is not responding"
+
+      - alert: InterfaceDown
+        expr: interface_up == 0 unless on(device) device_up == 0
+        for: 30s
+        labels:
+          severity: major
+        annotations:
+          summary: "Interface {{ $labels.interface }} on {{ $labels.device }} is down"
+
+      - alert: HighCPU
+        expr: device_cpu_percent > 90
+        for: 1m
+        labels:
+          severity: minor
+        annotations:
+          summary: "CPU on {{ $labels.device }} is {{ $value | printf \"%.0f\" }}%"
+
+      - alert: HighLatency
+        expr: device_latency_ms > 200
+        for: 1m
+        labels:
+          severity: major
+        annotations:
+          summary: "Latency to {{ $labels.device }} is {{ $value | printf \"%.0f\" }} ms"
+
+      - alert: PacketLoss
+        expr: device_packet_loss_percent > 5 unless on(device) device_up == 0
+        for: 1m
+        labels:
+          severity: major
+        annotations:
+          summary: "{{ $value | printf \"%.1f\" }}% packet loss to {{ $labels.device }}"
+
+  - name: platform
+    rules:
+      - alert: MonitoringTargetDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          device: "{{ $labels.job }}"
+        annotations:
+          summary: "Prometheus cannot scrape {{ $labels.job }} ({{ $labels.instance }})"

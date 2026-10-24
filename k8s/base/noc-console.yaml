@@ -1,0 +1,108 @@
+# ---------------------------------------------------------------------------
+# A Kubernetes manifest describes WHAT you want, not HOW to do it.
+# You say "I want 2 copies of the console running", and Kubernetes keeps it true:
+# if a copy crashes or a server dies, it starts a new one by itself.
+# One file can hold several objects, separated by "---".
+# ---------------------------------------------------------------------------
+
+# A Deployment manages identical Pods. A Pod = one (or more) running containers.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: noc-console
+  labels:
+    app: noc-console
+spec:
+  # 2 copies: if one dies, users still reach the other. The console can do this
+  # because it keeps no state of its own; everything is in PostgreSQL.
+  replicas: 2
+  # "Which Pods belong to me?" -> the ones with label app=noc-console.
+  selector:
+    matchLabels:
+      app: noc-console
+  # The template is the blueprint for each Pod.
+  template:
+    metadata:
+      labels:
+        app: noc-console
+    spec:
+      # Pod-level security: refuse to start if the image would run as root.
+      # Works because our Dockerfile says USER 10001 (a number).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: noc-console
+          # Just a name here; the overlay (k8s/overlays/local or aws) decides the real image + tag.
+          image: noc-console
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: SIMULATOR_URL
+              value: http://device-simulator:8000
+            # The password comes from a Secret, never written in this file.
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres
+                  key: POSTGRES_PASSWORD
+            # $(POSTGRES_PASSWORD) is replaced by the variable defined just above.
+            - name: DATABASE_URL
+              value: postgresql+psycopg://noc:$(POSTGRES_PASSWORD)@postgres:5432/noc
+          # requests = what the scheduler reserves for the Pod on a node.
+          # limits = the maximum; above the memory limit the container is killed ("OOMKilled").
+          resources:
+            requests:
+              cpu: 50m        # 50 millicores = 5% of one CPU core
+              memory: 96Mi
+            limits:
+              memory: 256Mi
+          # Three health checks (probes):
+          # startupProbe: "has the app finished starting?" Gives it up to 60s (30 x 2s)
+          #   to wait for the database. The other probes only begin after it succeeds.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          # livenessProbe: "is the app still alive?" If it fails 3 times, Kubernetes RESTARTS the container.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          # readinessProbe: "can it serve users right now?" /readyz also checks the database.
+          #   If it fails, the Pod is taken OUT of the Service (no traffic), but NOT restarted.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+# Pods come and go and get new IP addresses each time. A Service gives them ONE
+# stable name and IP. Other Pods just call http://noc-console:8000 and the Service
+# load-balances between the 2 replicas (it finds them by the label selector).
+apiVersion: v1
+kind: Service
+metadata:
+  name: noc-console
+  labels:
+    app: noc-console
+spec:
+  # ClusterIP = reachable only inside the cluster. The local overlay changes it
+  # to LoadBalancer so you can open it on http://localhost:8000.
+  type: ClusterIP
+  selector:
+    app: noc-console
+  ports:
+    - name: http
+      port: 8000        # the port other Pods call
+      targetPort: http  # the container port (named above) it forwards to

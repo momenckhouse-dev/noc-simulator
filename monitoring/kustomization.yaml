@@ -1,0 +1,24 @@
+# Turns the monitoring config files into Kubernetes ConfigMaps.
+# Kustomize adds a hash to each name (e.g. prometheus-config-7k2f9g). When a file
+# changes, the name changes, so the Pods using it restart and pick up the new config.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+  - name: prometheus-config
+    files:
+      - prometheus/prometheus.yml
+  - name: prometheus-rules
+    files:
+      - prometheus/rules/network-alerts.yml
+  - name: alertmanager-config
+    files:
+      - alertmanager/alertmanager.yml
+  - name: grafana-datasources
+    files:
+      - grafana/provisioning/datasources/prometheus.yml
+  - name: grafana-dashboard-provider
+    files:
+      - grafana/provisioning/dashboards/provider.yml
+  - name: grafana-dashboards
+    files:
+      - grafana/dashboards/noc-overview.json

@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: noc
+    folder: NOC
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

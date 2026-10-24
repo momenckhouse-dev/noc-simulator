@@ -1,0 +1,32 @@
+# Local overlay: Kubernetes inside Docker Desktop.
+# Deploy:  kubectl apply -k k8s/overlays/local
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: noc
+resources:
+  - ../../base
+
+# Use the images we built on this computer with `docker build -t <name>:dev`.
+# A tag that is not "latest" makes Kubernetes use the local image instead of downloading.
+images:
+  - name: noc-console
+    newTag: dev
+  - name: device-simulator
+    newTag: dev
+
+# Creates the "postgres" Secret from postgres.env (that file is NOT in git).
+secretGenerator:
+  - name: postgres
+    envs:
+      - postgres.env
+
+# Docker Desktop publishes LoadBalancer Services on localhost,
+# so these open at http://localhost:8000, :3000 and :9090.
+patches:
+  - target:
+      kind: Service
+      name: noc-console|grafana|prometheus
+    patch: |-
+      - op: replace
+        path: /spec/type
+        value: LoadBalancer

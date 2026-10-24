@@ -1,0 +1,68 @@
+# Runs the whole platform on your computer with one command:  docker compose up --build
+# Every service gets a DNS name equal to its service name, e.g. the console reaches
+# the database at "postgres:5432". (Kubernetes Services work the same way later.)
+name: noc-simulator
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: noc
+      POSTGRES_PASSWORD: noc   # fine for local only; Kubernetes/AWS will use Secrets
+      POSTGRES_DB: noc
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U noc -d noc"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  noc-console:
+    build: ./apps/noc-console
+    environment:
+      DATABASE_URL: postgresql+psycopg://noc:noc@postgres:5432/noc
+      SIMULATOR_URL: http://device-simulator:8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  device-simulator:
+    build: ./apps/device-simulator
+    environment:
+      RANDOM_FAULT_CHANCE: "0.01"   # each 5s tick: 1% chance of a surprise outage
+      RANDOM_FAULT_SECONDS: "180"
+    ports:
+      - "8001:8000"
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
+    ports:
+      - "9090:9090"
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/noc-overview.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:

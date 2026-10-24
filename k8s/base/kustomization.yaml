@@ -1,0 +1,16 @@
+# Kustomize (built into kubectl) collects many YAML files into one deployable bundle.
+# "base" = what is the same everywhere. "overlays/local" and later "overlays/aws"
+# only describe the DIFFERENCES (which image, how it is exposed, where secrets come from).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: noc
+resources:
+  - namespace.yaml
+  - postgres.yaml
+  - noc-console.yaml
+  - device-simulator.yaml
+  - monitoring.yaml
+  - ../../monitoring
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: noc-simulator

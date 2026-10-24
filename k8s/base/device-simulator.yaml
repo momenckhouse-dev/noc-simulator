@@ -1,0 +1,79 @@
+# Same building blocks as noc-console.yaml (read that file for the explanations).
+# A ConfigMap holds plain (non-secret) settings; the Deployment loads them as env vars.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: device-simulator
+data:
+  RANDOM_FAULT_CHANCE: "0.01"
+  RANDOM_FAULT_SECONDS: "180"
+  TICK_SECONDS: "5"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: device-simulator
+  labels:
+    app: device-simulator
+spec:
+  # Must stay 1: the fake network lives in this Pod's memory. Two copies would be
+  # two different networks, and a fault injected into one would not show in the other.
+  replicas: 1
+  # Recreate = stop the old Pod before starting the new one (never two networks at once).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: device-simulator
+  template:
+    metadata:
+      labels:
+        app: device-simulator
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: device-simulator
+          image: device-simulator
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: device-simulator
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: device-simulator
+  labels:
+    app: device-simulator
+spec:
+  selector:
+    app: device-simulator
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
