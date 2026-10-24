@@ -95,9 +95,12 @@ monitoring/kustomization.yaml   # turns the monitoring config files into ConfigM
 
 Setup once: copy `terraform/backend.hcl.example` → `backend.hcl` and `terraform/terraform.tfvars.example` → `terraform.tfvars`, fill them in.
 
-```powershell
-.\scripts\aws-up.ps1     # terraform apply, Secret, GitHub variables, run pipeline (~25 min)
-.\scripts\aws-down.ps1   # delete load balancers, terraform destroy (~15 min)
+```bash
+# Linux / WSL (first time only: bash scripts/setup-wsl.sh installs the tools)
+bash scripts/aws-up.sh      # terraform apply, Secret, GitHub variables, run pipeline (~25 min)
+bash scripts/aws-down.sh    # delete load balancers, terraform destroy (~15 min)
+
+# Windows PowerShell equivalents: .\scripts\aws-up.ps1 and .\scripts\aws-down.ps1
 ```
 
 About $9-10 per day while it is up (EKS control plane, 2 nodes, NAT gateway, 2 NLBs).

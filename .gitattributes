@@ -1,0 +1,2 @@
+# Linux shell scripts break with Windows line endings (CRLF), so always store them with LF.
+*.sh text eol=lf
