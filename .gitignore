@@ -8,3 +8,6 @@ __pycache__/
 *.tfstate.*
 .env
 postgres.env
+terraform.tfvars
+backend.hcl
+values.env

@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars (not committed) and fill in.
+
+# gh api repos/OWNER/noc-simulator/actions/oidc/customization/sub   -> "sub_claim_prefix"
+github_oidc_subject = "repo:OWNER@123456/noc-simulator@7890123"
+
+alert_email = "you@example.com"
+
+# Defaults (uncomment to change):
+# region             = "eu-central-1"
+# node_desired_size  = 2
+# monthly_budget_usd = 25

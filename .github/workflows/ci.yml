@@ -3,10 +3,12 @@
 # you push code or open a Pull Request.
 #
 #   push / PR ──▶ test (both apps) ──┐
-#             ──▶ validate configs ──┴──▶ build images ──▶ push to GHCR (only on main)
+#             ──▶ validate configs ──┴──▶ build + scan ──▶ push to GHCR (+ ECR) ──▶ deploy to EKS
+#                                                          (only on main)          (only while AWS is up)
 #
 # CI = Continuous Integration: every change is tested automatically.
-# CD = Continuous Delivery: every change on main becomes a ready-to-deploy image.
+# CD = Continuous Delivery/Deployment: every change on main becomes an image and,
+#      while the AWS environment exists (repo variable AWS_DEPLOY=true), goes live on EKS.
 # ---------------------------------------------------------------------------
 name: CI
 
@@ -15,6 +17,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch: # "Run workflow" button / `gh workflow run ci.yml`
 
 # Least privilege: by default the pipeline can only READ the repo.
 permissions:
@@ -68,12 +71,25 @@ jobs:
 
       - name: Render and validate Kubernetes manifests
         run: |
-          # the real postgres.env is not in git, so use the example for validation
+          # the real postgres.env / values.env are not in git, so use the examples for validation
           cp k8s/overlays/local/postgres.env.example k8s/overlays/local/postgres.env
-          kubectl kustomize k8s/overlays/local > rendered.yaml
-          kubeconform -strict -summary rendered.yaml
+          cp k8s/overlays/aws/values.env.example k8s/overlays/aws/values.env
+          for overlay in local aws; do
+            kubectl kustomize "k8s/overlays/$overlay" > "rendered-$overlay.yaml"
+            kubeconform -strict -summary "rendered-$overlay.yaml"
+          done
 
-  # ---- 3. Build Docker images (and push them on main) ----------------------
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Check Terraform
+        run: |
+          terraform -chdir=terraform fmt -check -recursive
+          terraform -chdir=terraform init -backend=false -input=false
+          terraform -chdir=terraform validate
+
+  # ---- 3. Build, scan, push ------------------------------------------------
   build:
     name: Build ${{ matrix.app }} image
     needs: [test, validate]                # only build if tests and validation passed
@@ -81,22 +97,16 @@ jobs:
     permissions:
       contents: read
       packages: write                      # allowed to push to GitHub Container Registry
+      id-token: write                      # allowed to request an OIDC token for AWS
     strategy:
       matrix:
         app: [noc-console, device-simulator]
     env:
-      PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+      AWS_DEPLOY: ${{ vars.AWS_DEPLOY == 'true' }}
     steps:
       - uses: actions/checkout@v5
       - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        if: env.PUSH == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}   # temporary token GitHub creates for each run
 
       # Tags every image with the commit SHA (e.g. sha-3f9c2ab) so you always know
       # exactly which code is inside, plus "latest" on main.
@@ -109,12 +119,86 @@ jobs:
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build (and push)
+      # load: true keeps the image on the runner so it can be scanned BEFORE anyone can pull it.
+      - name: Build
         uses: docker/build-push-action@v6
         with:
           context: apps/${{ matrix.app }}
-          push: ${{ env.PUSH == 'true' }}
+          load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.app }}
           cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+      # Security scan: fail the pipeline if the image has a CRITICAL vulnerability that has a fix.
+      # Third-party action pinned to a full commit SHA, so a hijacked tag can't swap the code.
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/${{ matrix.app }}:${{ steps.meta.outputs.version }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Push to GHCR
+        if: env.PUSH == 'true'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push --all-tags "ghcr.io/${{ github.repository_owner }}/${{ matrix.app }}"
+
+      # ---- AWS (only while the AWS environment is up) ----
+      - name: Log in to AWS with OIDC (no stored keys)
+        if: env.PUSH == 'true' && env.AWS_DEPLOY == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Push to ECR
+        if: env.PUSH == 'true' && env.AWS_DEPLOY == 'true'
+        run: |
+          TAG="sha-${GITHUB_SHA::7}"
+          aws ecr get-login-password | docker login "${{ vars.ECR_REGISTRY }}" -u AWS --password-stdin
+          docker tag "ghcr.io/${{ github.repository_owner }}/${{ matrix.app }}:$TAG" "${{ vars.ECR_REGISTRY }}/${{ matrix.app }}:$TAG"
+          docker push "${{ vars.ECR_REGISTRY }}/${{ matrix.app }}:$TAG"
+
+  # ---- 4. Deploy to EKS -----------------------------------------------------
+  deploy:
+    name: Deploy to EKS
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    # one deploy at a time; a newer push waits instead of racing the older one
+    concurrency: deploy-eks
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Connect kubectl to the cluster
+        run: aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER }}" --region "${{ vars.AWS_REGION }}"
+
+      - name: Write deploy values
+        run: |
+          TAG="sha-${GITHUB_SHA::7}"
+          cat > k8s/overlays/aws/values.env <<EOF
+          RDS_HOST=${{ vars.RDS_HOST }}
+          ALLOWED_CIDR=${{ vars.ALLOWED_CIDR }}
+          CONSOLE_IMAGE=${{ vars.ECR_REGISTRY }}/noc-console:$TAG
+          SIMULATOR_IMAGE=${{ vars.ECR_REGISTRY }}/device-simulator:$TAG
+          EOF
+
+      - name: Apply manifests
+        run: kubectl apply -k k8s/overlays/aws
+
+      # Wait until the new Pods pass their readiness probes; fail the run if they don't.
+      - name: Wait for rollout
+        run: |
+          kubectl -n noc rollout status deployment/noc-console --timeout=5m
+          kubectl -n noc rollout status deployment/device-simulator --timeout=5m

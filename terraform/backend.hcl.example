@@ -1,0 +1,6 @@
+# Copy to backend.hcl (not committed): terraform init -backend-config=backend.hcl
+bucket       = "YOUR-TFSTATE-BUCKET"
+key          = "noc-simulator/terraform.tfstate"
+region       = "eu-central-1"
+encrypt      = true
+use_lockfile = true

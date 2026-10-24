@@ -1,0 +1,105 @@
+# AWS overlay: the same base, with three differences:
+#   1. the database is Amazon RDS, not a Postgres Pod
+#   2. images come from ECR (exact commit tag)
+#   3. console + Grafana get an AWS Network Load Balancer that only YOUR IP may reach
+# Deploy-specific values (RDS address, your IP, image tags) live in values.env,
+# which the pipeline / scripts write. It is not in git (see values.env.example).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: noc
+resources:
+  - ../../base
+
+# Holds the values for the "replacements" below. local-config = used while building,
+# never sent to the cluster.
+configMapGenerator:
+  - name: deploy-values
+    envs:
+      - values.env
+    options:
+      disableNameSuffixHash: true
+      annotations:
+        config.kubernetes.io/local-config: "true"
+
+patches:
+  # 1. No Postgres Pod on AWS...
+  - patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: postgres
+  # ...instead the "postgres" Service becomes a DNS alias (CNAME) for the RDS address.
+  # The console still connects to postgres:5432 and never knows the difference.
+  - patch: |-
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: postgres
+      spec:
+        type: ExternalName
+        externalName: set-by-replacement
+        selector: null
+  # 3. Public entry points, locked to one IP.
+  - target:
+      kind: Service
+      name: noc-console|grafana
+    patch: |-
+      - op: replace
+        path: /spec/type
+        value: LoadBalancer
+      - op: add
+        path: /spec/loadBalancerSourceRanges
+        value: ["set-by-replacement"]
+      - op: add
+        path: /metadata/annotations
+        value:
+          service.beta.kubernetes.io/aws-load-balancer-type: nlb
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: deploy-values
+      fieldPath: data.RDS_HOST
+    targets:
+      - select:
+          kind: Service
+          name: postgres
+        fieldPaths:
+          - spec.externalName
+  - source:
+      kind: ConfigMap
+      name: deploy-values
+      fieldPath: data.ALLOWED_CIDR
+    targets:
+      - select:
+          kind: Service
+          name: noc-console
+        fieldPaths:
+          - spec.loadBalancerSourceRanges.0
+      - select:
+          kind: Service
+          name: grafana
+        fieldPaths:
+          - spec.loadBalancerSourceRanges.0
+  # 2. Exact image from ECR, e.g. 0712...amazonaws.com/noc-console:sha-3e239c9
+  - source:
+      kind: ConfigMap
+      name: deploy-values
+      fieldPath: data.CONSOLE_IMAGE
+    targets:
+      - select:
+          kind: Deployment
+          name: noc-console
+        fieldPaths:
+          - spec.template.spec.containers.[name=noc-console].image
+  - source:
+      kind: ConfigMap
+      name: deploy-values
+      fieldPath: data.SIMULATOR_IMAGE
+    targets:
+      - select:
+          kind: Deployment
+          name: device-simulator
+        fieldPaths:
+          - spec.template.spec.containers.[name=device-simulator].image

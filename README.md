@@ -70,6 +70,39 @@ k8s/
 monitoring/kustomization.yaml   # turns the monitoring config files into ConfigMaps
 ```
 
+## Run it on AWS
+
+```
+                        GitHub Actions ──OIDC (no stored keys)──▶ IAM role
+                          │ push image                               │ deploy
+                          ▼                                          ▼
+ your IP only ──▶ NLB ──▶ ┌──────────── VPC 10.50.0.0/16, 2 AZs ─────────────┐
+                          │ public subnets:  NAT gateway, load balancers     │
+                          │ private subnets: EKS nodes (m7i-flex.large x2)   │
+                          │                  RDS PostgreSQL (db.t4g.micro)   │
+                          └───────────────────────────────────────────────────┘
+                          ECR (images, scan on push)   CloudWatch (EKS logs, VPC Flow Logs)   Budget alert
+```
+
+| Piece | Terraform file |
+|---|---|
+| VPC, subnets, NAT, flow logs | `terraform/vpc.tf` |
+| EKS cluster + node group | `terraform/eks.tf` |
+| RDS PostgreSQL | `terraform/rds.tf` |
+| ECR repositories | `terraform/ecr.tf` |
+| GitHub OIDC role | `terraform/github_oidc.tf` |
+| Budget alert | `terraform/budget.tf` |
+
+Setup once: copy `terraform/backend.hcl.example` → `backend.hcl` and `terraform/terraform.tfvars.example` → `terraform.tfvars`, fill them in.
+
+```powershell
+.\scripts\aws-up.ps1     # terraform apply, Secret, GitHub variables, run pipeline (~25 min)
+.\scripts\aws-down.ps1   # delete load balancers, terraform destroy (~15 min)
+```
+
+About $9-10 per day while it is up (EKS control plane, 2 nodes, NAT gateway, 2 NLBs).
+While the repo variable `AWS_DEPLOY` is `true`, every push to `main` is deployed to EKS automatically.
+
 ## Run the tests
 
 ```bash
@@ -96,5 +129,5 @@ pytest
 - [x] Phase 1.1: apps, Dockerfiles, Docker Compose, monitoring stack, tests
 - [x] Phase 1.2: Kubernetes manifests with Kustomize (Deployments, StatefulSet, Services, ConfigMaps, Secrets, probes)
 - [x] Phase 1.3: CI/CD with GitHub Actions (tests, promtool/amtool/kubeconform validation, build + push images to GHCR)
-- [ ] Phase 2: AWS with Terraform (VPC, ECR, EKS, RDS), deploy from the pipeline, CloudWatch
+- [x] Phase 2: AWS with Terraform (VPC, EKS, RDS, ECR, OIDC, budget), Trivy scan, deploy from the pipeline
 - [ ] Phase 3: troubleshooting terminal (ping, traceroute, show interfaces, show log), runbooks, escalation, training scenarios
