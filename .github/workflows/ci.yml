@@ -158,6 +158,11 @@ jobs:
         if: env.PUSH == 'true' && env.AWS_DEPLOY == 'true'
         run: |
           TAG="sha-${GITHUB_SHA::7}"
+          # ECR tags are immutable: re-running the pipeline on the same commit must not try to push again.
+          if aws ecr describe-images --repository-name "${{ matrix.app }}" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "${{ matrix.app }}:$TAG is already in ECR - nothing to push."
+            exit 0
+          fi
           aws ecr get-login-password | docker login "${{ vars.ECR_REGISTRY }}" -u AWS --password-stdin
           docker tag "ghcr.io/${{ github.repository_owner }}/${{ matrix.app }}:$TAG" "${{ vars.ECR_REGISTRY }}/${{ matrix.app }}:$TAG"
           docker push "${{ vars.ECR_REGISTRY }}/${{ matrix.app }}:$TAG"
