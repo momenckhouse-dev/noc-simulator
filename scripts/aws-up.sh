@@ -13,7 +13,11 @@ tf() { terraform -chdir=terraform "$@"; }
 
 repo=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 
-step "1/5 Terraform: building VPC, EKS, RDS, ECR, IAM, budget (about 15-20 minutes)"
+if ! command -v helm >/dev/null; then
+  echo "helm is missing - run: bash scripts/setup-wsl.sh"; exit 1
+fi
+
+step "1/5 Terraform: building VPC, EKS, RDS, ECR, IAM, Secrets Manager, budget (about 15-20 minutes)"
 tf init -backend-config=backend.hcl -input=false
 tf apply   # shows the plan, then waits for you to type: yes
 
@@ -24,11 +28,12 @@ step "2/5 Connecting kubectl to EKS"
 aws eks update-kubeconfig --region "$region" --name "$cluster"
 kubectl get nodes
 
-step "3/5 Storing the database password as a Kubernetes Secret"
-kubectl create namespace noc --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n noc create secret generic postgres \
-  --from-literal=POSTGRES_PASSWORD="$(tf output -raw db_password)" \
-  --dry-run=client -o yaml | kubectl apply -f -
+# The database password never passes through this script: RDS keeps it in AWS Secrets
+# Manager, and External Secrets Operator copies it into the cluster (k8s/overlays/aws/external-secret.yaml).
+step "3/5 Installing External Secrets Operator (fetches the DB password from Secrets Manager)"
+helm repo add external-secrets https://charts.external-secrets.io --force-update
+helm upgrade --install external-secrets external-secrets/external-secrets \
+  --version 2.14.0 --namespace external-secrets --create-namespace --wait
 
 step "4/5 Telling GitHub Actions where to deploy (repo variables, no secrets)"
 my_ip=$(curl -s https://checkip.amazonaws.com)
@@ -37,6 +42,7 @@ gh variable set AWS_ROLE_ARN -R "$repo" --body "$(tf output -raw github_actions_
 gh variable set ECR_REGISTRY -R "$repo" --body "$(tf output -raw ecr_registry)"
 gh variable set EKS_CLUSTER  -R "$repo" --body "$cluster"
 gh variable set RDS_HOST     -R "$repo" --body "$(tf output -raw rds_host)"
+gh variable set DB_SECRET_ARN -R "$repo" --body "$(tf output -raw db_secret_arn)"
 gh variable set ALLOWED_CIDR -R "$repo" --body "$my_ip/32"
 gh variable set AWS_DEPLOY   -R "$repo" --body "true"
 

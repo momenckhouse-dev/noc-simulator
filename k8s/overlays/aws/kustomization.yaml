@@ -2,6 +2,7 @@
 #   1. the database is Amazon RDS, not a Postgres Pod
 #   2. images come from ECR (exact commit tag)
 #   3. console + Grafana get an AWS Network Load Balancer that only YOUR IP may reach
+#   4. the database password is fetched from AWS Secrets Manager (external-secret.yaml)
 # Deploy-specific values (RDS address, your IP, image tags) live in values.env,
 # which the pipeline / scripts write. It is not in git (see values.env.example).
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -9,6 +10,7 @@ kind: Kustomization
 namespace: noc
 resources:
   - ../../base
+  - external-secret.yaml
 
 # Holds the values for the "replacements" below. local-config = used while building,
 # never sent to the cluster.
@@ -57,6 +59,17 @@ patches:
           service.beta.kubernetes.io/aws-load-balancer-type: nlb
 
 replacements:
+  # 4. Which secret in AWS Secrets Manager holds the database password
+  - source:
+      kind: ConfigMap
+      name: deploy-values
+      fieldPath: data.DB_SECRET_ARN
+    targets:
+      - select:
+          kind: ExternalSecret
+          name: postgres
+        fieldPaths:
+          - spec.data.0.remoteRef.key
   - source:
       kind: ConfigMap
       name: deploy-values

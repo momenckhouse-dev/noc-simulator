@@ -43,6 +43,9 @@ module "eks" {
     vpc-cni = {     # gives every Pod a real VPC IP address
       before_compute = true
     }
+    eks-pod-identity-agent = { # lets Pods get AWS permissions without keys
+      before_compute = true
+    }
   }
 
   eks_managed_node_groups = {

@@ -76,7 +76,8 @@ jobs:
           cp k8s/overlays/aws/values.env.example k8s/overlays/aws/values.env
           for overlay in local aws; do
             kubectl kustomize "k8s/overlays/$overlay" > "rendered-$overlay.yaml"
-            kubeconform -strict -summary "rendered-$overlay.yaml"
+            # ExternalSecret/SecretStore are add-on types (CRDs): their schemas come from a public catalog
+            kubeconform -strict -summary               -schema-location default               -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'               "rendered-$overlay.yaml"
           done
 
       - uses: hashicorp/setup-terraform@v3
@@ -197,6 +198,7 @@ jobs:
           ALLOWED_CIDR=${{ vars.ALLOWED_CIDR }}
           CONSOLE_IMAGE=${{ vars.ECR_REGISTRY }}/noc-console:$TAG
           SIMULATOR_IMAGE=${{ vars.ECR_REGISTRY }}/device-simulator:$TAG
+          DB_SECRET_ARN=${{ vars.DB_SECRET_ARN }}
           EOF
 
       - name: Apply manifests

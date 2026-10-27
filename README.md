@@ -66,7 +66,7 @@ Same URLs as above. Remove everything: `kubectl delete -k k8s/overlays/local`.
 k8s/
   base/                 # same everywhere: Deployments, StatefulSet, Services, probes
   overlays/local/       # Docker Desktop: local images, LoadBalancer on localhost, Secret
-  overlays/aws/         # (Phase 2) ECR images, RDS, Ingress
+  overlays/aws/         # ECR images, RDS, NLBs, password from AWS Secrets Manager
 monitoring/kustomization.yaml   # turns the monitoring config files into ConfigMaps
 ```
 
@@ -82,13 +82,15 @@ monitoring/kustomization.yaml   # turns the monitoring config files into ConfigM
                           │                  RDS PostgreSQL (db.t4g.micro)   │
                           └───────────────────────────────────────────────────┘
                           ECR (images, scan on push)   CloudWatch (EKS logs, VPC Flow Logs)   Budget alert
+                          Secrets Manager (DB password) ──External Secrets Operator──▶ Kubernetes Secret
 ```
 
 | Piece | Terraform file |
 |---|---|
 | VPC, subnets, NAT, flow logs | `terraform/vpc.tf` |
 | EKS cluster + node group | `terraform/eks.tf` |
-| RDS PostgreSQL | `terraform/rds.tf` |
+| RDS PostgreSQL (7-day backups, password managed by RDS in Secrets Manager) | `terraform/rds.tf` |
+| Secrets access for the cluster (IAM role + EKS Pod Identity, read-only on one secret) | `terraform/secrets.tf` |
 | ECR repositories | `terraform/ecr.tf` |
 | GitHub OIDC role | `terraform/github_oidc.tf` |
 | Budget alert | `terraform/budget.tf` |
@@ -97,10 +99,9 @@ Setup once: copy `terraform/backend.hcl.example` → `backend.hcl` and `terrafor
 
 ```bash
 # Linux / WSL (first time only: bash scripts/setup-wsl.sh installs the tools)
-bash scripts/aws-up.sh      # terraform apply, Secret, GitHub variables, run pipeline (~25 min)
+bash scripts/aws-up.sh      # terraform apply, External Secrets Operator, GitHub variables, run pipeline (~25 min)
 bash scripts/aws-down.sh    # delete load balancers, terraform destroy (~15 min)
 
-# Windows PowerShell equivalents: .\scripts\aws-up.ps1 and .\scripts\aws-down.ps1
 ```
 
 About $9-10 per day while it is up (EKS control plane, 2 nodes, NAT gateway, 2 NLBs).

@@ -18,9 +18,8 @@ output "rds_host" {
   value = aws_db_instance.db.address
 }
 
-output "db_password" {
-  value     = random_password.db.result
-  sensitive = true
+output "db_secret_arn" {
+  value = aws_db_instance.db.master_user_secret[0].secret_arn
 }
 
 output "github_actions_role_arn" {

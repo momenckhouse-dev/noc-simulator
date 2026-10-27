@@ -1,11 +1,6 @@
 # On AWS the database is Amazon RDS instead of a Postgres Pod: AWS handles the disk,
 # patching and backups. db.t4g.micro + 20 GB is in the free tier.
 
-resource "random_password" "db" {
-  length  = 24
-  special = false
-}
-
 resource "aws_db_subnet_group" "db" {
   name       = "${var.project_name}-db"
   subnet_ids = module.vpc.private_subnets
@@ -44,14 +39,15 @@ resource "aws_db_instance" "db" {
 
   db_name  = "noc"
   username = "noc"
-  password = random_password.db.result
+  # RDS creates the password itself and stores it in AWS Secrets Manager.
+  manage_master_user_password = true
 
   db_subnet_group_name   = aws_db_subnet_group.db.name
   vpc_security_group_ids = [aws_security_group.db.id]
   publicly_accessible    = false
 
   # Lab settings: easy to destroy, no leftover snapshots costing money.
-  backup_retention_period = 1
+  backup_retention_period = 7
   skip_final_snapshot     = true
   deletion_protection     = false
   apply_immediately       = true
